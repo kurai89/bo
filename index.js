@@ -29,6 +29,7 @@ const client = new Client({
 
 let connection;
 let player;
+
 let queue = [];
 let isPlaying = false;
 
@@ -37,33 +38,15 @@ let isPlaying = false;
 const commands = [
     new SlashCommandBuilder()
         .setName("play")
-        .setDescription("Play a song from YouTube")
-        .addStringOption(option =>
-            option
-                .setName("query")
+        .setDescription("Play music")
+        .addStringOption(opt =>
+            opt.setName("query")
                 .setDescription("Song name or YouTube URL")
                 .setRequired(true)
         ),
 
-    new SlashCommandBuilder()
-        .setName("skip")
-        .setDescription("Skip song"),
-
-    new SlashCommandBuilder()
-        .setName("stop")
-        .setDescription("Stop music and clear queue"),
-
-    new SlashCommandBuilder()
-        .setName("pause")
-        .setDescription("Pause music"),
-
-    new SlashCommandBuilder()
-        .setName("resume")
-        .setDescription("Resume music"),
-
-    new SlashCommandBuilder()
-        .setName("queue")
-        .setDescription("Show queue"),
+    new SlashCommandBuilder().setName("skip").setDescription("Skip song"),
+    new SlashCommandBuilder().setName("stop").setDescription("Stop music"),
 ];
 
 /* ---------------- REGISTER COMMANDS ---------------- */
@@ -71,24 +54,15 @@ const commands = [
 const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
 
 async function registerCommands() {
-    try {
-        if (!process.env.CLIENT_ID || !process.env.GUILD_ID) {
-            console.log("Missing CLIENT_ID or GUILD_ID");
-            return;
-        }
+    await rest.put(
+        Routes.applicationGuildCommands(
+            process.env.CLIENT_ID,
+            process.env.GUILD_ID
+        ),
+        { body: commands }
+    );
 
-        await rest.put(
-            Routes.applicationGuildCommands(
-                process.env.CLIENT_ID,
-                process.env.GUILD_ID
-            ),
-            { body: commands }
-        );
-
-        console.log("Slash commands registered ✅");
-    } catch (err) {
-        console.log("Command register error:", err);
-    }
+    console.log("Commands registered");
 }
 
 /* ---------------- PLAYER ---------------- */
@@ -104,9 +78,15 @@ function createPlayer() {
         queue.shift();
         playNext();
     });
+
+    player.on("error", (err) => {
+        console.log("Player error:", err);
+        queue.shift();
+        playNext();
+    });
 }
 
-/* ---------------- PLAY NEXT ---------------- */
+/* ---------------- PLAY FUNCTION (FIXED) ---------------- */
 
 async function playNext() {
     if (!queue.length) {
@@ -119,18 +99,26 @@ async function playNext() {
     const url = queue[0];
 
     try {
+        console.log("Loading:", url);
+
         const stream = await playdl.stream(url);
 
         const resource = createAudioResource(stream.stream, {
             inputType: stream.type,
         });
 
+        if (!player) createPlayer();
+
         player.play(resource);
-        connection.subscribe(player);
+
+        if (connection) {
+            connection.subscribe(player);
+        }
 
         console.log("Now playing:", url);
+
     } catch (err) {
-        console.log("Play error:", err);
+        console.log("Stream error:", err);
         queue.shift();
         playNext();
     }
@@ -146,7 +134,7 @@ async function joinVoice(voiceChannel) {
         selfDeaf: true,
     });
 
-    console.log("Joined voice:", voiceChannel.name);
+    console.log("Joining voice:", voiceChannel.name);
 
     try {
         await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
@@ -192,14 +180,15 @@ client.on("interactionCreate", async (interaction) => {
 
         if (!connection) {
             await joinVoice(voiceChannel);
+        }
 
-            createPlayer();
-            playNext();
-        } else if (!isPlaying) {
+        if (!player) createPlayer();
+
+        if (!isPlaying) {
             playNext();
         }
 
-        return interaction.reply(`Added to queue 🎵`);
+        return interaction.reply("Added to queue 🎵");
     }
 
     /* SKIP */
@@ -217,29 +206,6 @@ client.on("interactionCreate", async (interaction) => {
         isPlaying = false;
 
         return interaction.reply("Stopped ⛔");
-    }
-
-    /* PAUSE */
-    if (interaction.commandName === "pause") {
-        player?.pause();
-        return interaction.reply("Paused ⏸️");
-    }
-
-    /* RESUME */
-    if (interaction.commandName === "resume") {
-        player?.unpause();
-        return interaction.reply("Resumed ▶️");
-    }
-
-    /* QUEUE */
-    if (interaction.commandName === "queue") {
-        if (!queue.length)
-            return interaction.reply("Queue is empty.");
-
-        return interaction.reply(
-            "🎵 Queue:\n" +
-            queue.map((q, i) => `${i + 1}. ${q}`).join("\n")
-        );
     }
 });
 
