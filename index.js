@@ -29,7 +29,6 @@ const client = new Client({
 
 let connection;
 let player;
-
 let queue = [];
 let isPlaying = false;
 
@@ -39,15 +38,16 @@ const commands = [
     new SlashCommandBuilder()
         .setName("play")
         .setDescription("Play a song from YouTube")
-        .addStringOption(opt =>
-            opt.setName("query")
-                .setDescription("YouTube URL or search term")
+        .addStringOption(option =>
+            option
+                .setName("query")
+                .setDescription("Song name or YouTube URL")
                 .setRequired(true)
         ),
 
     new SlashCommandBuilder()
         .setName("skip")
-        .setDescription("Skip current song"),
+        .setDescription("Skip song"),
 
     new SlashCommandBuilder()
         .setName("stop")
@@ -71,17 +71,27 @@ const commands = [
 const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
 
 async function registerCommands() {
-    await rest.put(
-        Routes.applicationGuildCommands(
-            process.env.CLIENT_ID,
-            process.env.GUILD_ID
-        ),
-        { body: commands }
-    );
-    console.log("Commands registered");
+    try {
+        if (!process.env.CLIENT_ID || !process.env.GUILD_ID) {
+            console.log("Missing CLIENT_ID or GUILD_ID");
+            return;
+        }
+
+        await rest.put(
+            Routes.applicationGuildCommands(
+                process.env.CLIENT_ID,
+                process.env.GUILD_ID
+            ),
+            { body: commands }
+        );
+
+        console.log("Slash commands registered ✅");
+    } catch (err) {
+        console.log("Command register error:", err);
+    }
 }
 
-/* ---------------- VOICE + PLAYER ---------------- */
+/* ---------------- PLAYER ---------------- */
 
 function createPlayer() {
     player = createAudioPlayer({
@@ -96,6 +106,8 @@ function createPlayer() {
     });
 }
 
+/* ---------------- PLAY NEXT ---------------- */
+
 async function playNext() {
     if (!queue.length) {
         isPlaying = false;
@@ -108,6 +120,7 @@ async function playNext() {
 
     try {
         const stream = await playdl.stream(url);
+
         const resource = createAudioResource(stream.stream, {
             inputType: stream.type,
         });
@@ -117,9 +130,29 @@ async function playNext() {
 
         console.log("Now playing:", url);
     } catch (err) {
-        console.log("Error playing song:", err);
+        console.log("Play error:", err);
         queue.shift();
         playNext();
+    }
+}
+
+/* ---------------- JOIN VOICE ---------------- */
+
+async function joinVoice(voiceChannel) {
+    connection = joinVoiceChannel({
+        channelId: voiceChannel.id,
+        guildId: voiceChannel.guild.id,
+        adapterCreator: voiceChannel.guild.voiceAdapterCreator,
+        selfDeaf: true,
+    });
+
+    console.log("Joined voice:", voiceChannel.name);
+
+    try {
+        await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
+        console.log("Voice READY");
+    } catch (err) {
+        console.log("Voice failed:", err);
     }
 }
 
@@ -142,26 +175,23 @@ client.on("interactionCreate", async (interaction) => {
         if (!voiceChannel)
             return interaction.reply("Join a voice channel first.");
 
-        let query = interaction.options.getString("query");
+        const query = interaction.options.getString("query");
 
-        // If not URL → search YouTube
+        let url = query;
+
         if (!query.startsWith("http")) {
-            const search = await playdl.search(query, { limit: 1 });
-            if (!search.length)
+            const result = await playdl.search(query, { limit: 1 });
+
+            if (!result.length)
                 return interaction.reply("No results found.");
 
-            query = search[0].url;
+            url = result[0].url;
         }
 
-        queue.push(query);
+        queue.push(url);
 
         if (!connection) {
-            connection = joinVoiceChannel({
-                channelId: voiceChannel.id,
-                guildId: voiceChannel.guild.id,
-                adapterCreator: voiceChannel.guild.voiceAdapterCreator,
-                selfDeaf: true,
-            });
+            await joinVoice(voiceChannel);
 
             createPlayer();
             playNext();
@@ -174,16 +204,15 @@ client.on("interactionCreate", async (interaction) => {
 
     /* SKIP */
     if (interaction.commandName === "skip") {
-        player.stop();
+        player?.stop();
         return interaction.reply("Skipped ⏭️");
     }
 
     /* STOP */
     if (interaction.commandName === "stop") {
         queue = [];
-        if (player) player.stop();
-        if (connection) connection.destroy();
-
+        player?.stop();
+        connection?.destroy();
         connection = null;
         isPlaying = false;
 
@@ -192,13 +221,13 @@ client.on("interactionCreate", async (interaction) => {
 
     /* PAUSE */
     if (interaction.commandName === "pause") {
-        player.pause();
+        player?.pause();
         return interaction.reply("Paused ⏸️");
     }
 
     /* RESUME */
     if (interaction.commandName === "resume") {
-        player.unpause();
+        player?.unpause();
         return interaction.reply("Resumed ▶️");
     }
 
