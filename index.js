@@ -1,140 +1,129 @@
 require("dotenv").config();
 
-const {
-    Client,
-    GatewayIntentBits,
-    SlashCommandBuilder,
-    REST,
-    Routes,
-} = require("discord.js");
-
+const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder } = require("discord.js");
 const {
     joinVoiceChannel,
     createAudioPlayer,
     createAudioResource,
     AudioPlayerStatus,
-    VoiceConnectionStatus,
-    entersState,
-    NoSubscriberBehavior,
+    NoSubscriberBehavior
 } = require("@discordjs/voice");
 
+const playdl = require("play-dl");
+
 const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildVoiceStates,
-    ],
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
 });
 
 let connection;
 let player;
+let queue = [];
 
-// 🎵 STREAM URL (replace with radio / stream link)
-const STREAM_URL = "http://stream.zeno.fm/your-radio-stream";
-
-async function connectVoice(channel) {
-    connection = joinVoiceChannel({
-        channelId: channel.id,
-        guildId: channel.guild.id,
-        adapterCreator: channel.guild.voiceAdapterCreator,
-        selfDeaf: true,
-    });
-
-    console.log("Joined voice channel");
-
-    connection.on(VoiceConnectionStatus.Disconnected, async () => {
-        console.log("Disconnected → reconnecting...");
-
-        try {
-            await entersState(connection, VoiceConnectionStatus.Signalling, 5000);
-        } catch {
-            setTimeout(() => {
-                connectVoice(channel);
-            }, 3000);
-        }
-    });
-
-    return connection;
-}
-
-function startStream() {
-    if (!connection) return;
-
+// 🎧 Create player
+function createPlayer() {
     player = createAudioPlayer({
         behaviors: {
             noSubscriber: NoSubscriberBehavior.Play,
         },
     });
 
-    const resource = createAudioResource(STREAM_URL);
+    player.on(AudioPlayerStatus.Idle, () => {
+        queue.shift();
+        playNext();
+    });
+}
+
+// ▶️ Play next song
+async function playNext() {
+    if (!queue.length) return;
+
+    const url = queue[0];
+
+    const stream = await playdl.stream(url);
+    const resource = createAudioResource(stream.stream, {
+        inputType: stream.type,
+    });
 
     player.play(resource);
     connection.subscribe(player);
 
-    player.on(AudioPlayerStatus.Idle, () => {
-        console.log("Stream dropped → restarting...");
-        startStream();
-    });
-
-    console.log("Streaming started");
+    console.log("Playing:", url);
 }
 
 // 📜 Slash commands
 const commands = [
-    new SlashCommandBuilder()
-        .setName("join")
-        .setDescription("Bot joins your voice channel"),
-
-    new SlashCommandBuilder()
-        .setName("leave")
-        .setDescription("Bot leaves voice channel"),
+    new SlashCommandBuilder().setName("play").setDescription("Play YouTube song").addStringOption(opt =>
+        opt.setName("url").setDescription("YouTube URL").setRequired(true)
+    ),
+    new SlashCommandBuilder().setName("skip").setDescription("Skip song"),
+    new SlashCommandBuilder().setName("stop").setDescription("Stop music"),
 ];
 
+// 🚀 Register commands
 const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
 
 async function registerCommands() {
     await rest.put(
-        Routes.applicationCommands(process.env.CLIENT_ID),
+        Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
         { body: commands }
     );
-    console.log("Slash commands registered");
 }
 
-// 🤖 Bot ready
+// 🤖 Ready
 client.once("ready", async () => {
     console.log(`Logged in as ${client.user.tag}`);
     await registerCommands();
 });
 
-// 🧠 Command handler
+// 🎮 Commands
 client.on("interactionCreate", async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
 
-    // JOIN
-    if (interaction.commandName === "join") {
-        const channel = interaction.member.voice.channel;
+    const voiceChannel = interaction.member.voice.channel;
 
-        if (!channel) {
-            return interaction.reply("Join a voice channel first.");
+    // PLAY
+    if (interaction.commandName === "play") {
+        if (!voiceChannel) return interaction.reply("Join a voice channel first.");
+
+        const url = interaction.options.getString("url");
+
+        queue.push(url);
+
+        if (!connection) {
+            connection = joinVoiceChannel({
+                channelId: voiceChannel.id,
+                guildId: voiceChannel.guild.id,
+                adapterCreator: voiceChannel.guild.voiceAdapterCreator,
+                selfDeaf: true,
+            });
+
+            createPlayer();
+            playNext();
         }
 
-        await connectVoice(channel);
-        startStream();
-
-        return interaction.reply("Joined voice & started 24/7 stream 🎵");
+        return interaction.reply(`Added to queue 🎵`);
     }
 
-    // LEAVE
-    if (interaction.commandName === "leave") {
-        if (connection) connection.destroy();
+    // SKIP
+    if (interaction.commandName === "skip") {
+        player.stop();
+        return interaction.reply("Skipped ⏭️");
+    }
+
+    // STOP
+    if (interaction.commandName === "stop") {
+        queue = [];
+        player.stop();
+        connection.destroy();
         connection = null;
 
-        return interaction.reply("Left voice channel 👋");
+        return interaction.reply("Stopped ⛔");
     }
 });
 
-// 🧯 safety
+// 🔐 Login
+client.login(process.env.TOKEN);
+
+// 🧯 Safety
 process.on("unhandledRejection", console.error);
 process.on("uncaughtException", console.error);
-
-// 🔐 login
-client.login(process.env.TOKEN);
